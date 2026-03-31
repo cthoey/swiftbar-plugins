@@ -1,0 +1,6 @@
+.DS_Store
+*.pyc
+*.vars.json
+__pycache__/
+vendor/ismc/iSMC
+vendor/ismc/version.txt

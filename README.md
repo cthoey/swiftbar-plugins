@@ -11,6 +11,7 @@ SwiftBar plugins for machine and workflow status items on macOS.
 
 ## Included
 
+- `plugins/disk-space.1m.sh`: APFS-aware disk space monitor for the internal drive plus mounted local volumes, with low-space alerts in the dropdown.
 - `plugins/temperature.15s.py`: Apple Silicon temperature monitor backed by `iSMC`, with CPU, GPU, battery, and hottest-sensor details in the dropdown.
 - `plugins/apple-container.15s.py`: Apple Container overview with system, start/stop/restart, prune, logs, and per-container lifecycle actions.
 - `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown.
@@ -54,6 +55,7 @@ chmod +x plugins/*
 plugins/
   apple-container.15s.py
   cpu-memory.5s.sh
+  disk-space.1m.sh
   temperature.15s.py
 scripts/
   install-ismc.sh
@@ -65,7 +67,7 @@ vendor/
 ## Notes
 
 - SwiftBar plugin filenames follow `{name}.{interval}.{ext}`, so `cpu-memory.5s.sh` refreshes every 5 seconds.
-- The plugin uses built-in macOS tools only: `top`, `ps`, `sort`, `head`, and `uptime`.
+- The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.
 - `scripts/install-ismc.sh` downloads the official `iSMC` release, verifies its checksum, and installs it into `vendor/ismc/iSMC`.
 - `plugins/temperature.15s.py` prefers `vendor/ismc/iSMC` and falls back to `iSMC` or `ismc` on `PATH`, so a Homebrew install works too.
 - The `iSMC` binary is not checked into the repo. It is installed locally into `vendor/ismc/` by the helper script.

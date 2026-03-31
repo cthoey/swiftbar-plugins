@@ -218,7 +218,7 @@ fi
 header_used_pct="${internal_used_pct:-0}"
 header_color="$(usage_color "$header_used_pct")"
 
-printf 'Disk %s%% | color=%s\n' "$header_used_pct" "$header_color"
+printf '%s%% | color=%s sfimage=internaldrive\n' "$header_used_pct" "$header_color"
 printf -- '---\n'
 
 if [[ -n "$internal_used_pct" ]]; then

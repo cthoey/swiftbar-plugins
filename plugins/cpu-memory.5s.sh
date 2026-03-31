@@ -189,7 +189,12 @@ header_color="$(usage_color $(( cpu_used > mem_used_pct ? cpu_used : mem_used_pc
 cpu_color="$(usage_color ${cpu_used%.*})"
 mem_color="$(usage_color ${mem_used_pct%.*})"
 
-printf 'CPU %s%% MEM %s%% | color=%s\n' "$cpu_used" "$mem_used_pct" "$header_color"
+printf ':cpu: %s%%   :memorychip: %s%% | color=%s sfcolor=%s sfcolor2=%s\n' \
+  "$cpu_used" \
+  "$mem_used_pct" \
+  "$header_color" \
+  "$cpu_color" \
+  "$mem_color"
 printf -- '---\n'
 printf 'CPU: %s%% used (%s%% user, %s%% sys, %s%% idle) | color=%s\n' "$cpu_used" "$cpu_user" "$cpu_sys" "$cpu_idle" "$cpu_color"
 printf 'Load Avg: %s\n' "$load_avg"

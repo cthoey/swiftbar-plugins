@@ -15,7 +15,7 @@ SwiftBar plugins for machine and workflow status items on macOS.
 - `plugins/temperature.15s.py`: Apple Silicon temperature monitor backed by `iSMC`, with CPU, GPU, battery, and hottest-sensor details in the dropdown.
 - `plugins/apple-container.15s.py`: Apple Container overview with system, start/stop/restart, prune, logs, and per-container lifecycle actions.
 - `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown, including friendly labels for Codex autonomous supervisors and workers.
-- `plugins/codex-runner.15s.py`: Continuum monitor for Codex autonomous workers, with top-bar worker counts, per-project status, low-overhead timing signals, recent log context, and quick start/restart/stop/log actions.
+- `plugins/codex-runner.15s.py`: Continuum monitor for [Continuum for Codex](https://github.com/cthoey/continuum-codex), with top-bar worker counts, per-project status, low-overhead timing signals, recent log context, and quick start/restart/stop/log actions.
 
 ## Setup
 
@@ -69,10 +69,10 @@ vendor/
 ## Notes
 
 - SwiftBar plugin filenames follow `{name}.{interval}.{ext}`, so `cpu-memory.5s.sh` refreshes every 5 seconds.
-- `plugins/codex-runner.15s.py` reads runner state from `CONTINUUM_RUNNER_ROOT` first, then from `~/.config/continuum/config.toml`, then falls back to `RELAY_RUNNER_ROOT` and `CODEX_RUNNER_ROOT` for compatibility. If none are set, it defaults to `~/continuum-runner`.
-- The Continuum plugin uses the runner scripts in the configured runner root. `Start project`,
-  `Restart project`, `Stop after pass`, and `Stop now` are thin wrappers around
-  `launch_project.sh`, `restart_project.sh`, `stop_project.sh`, and `stop_now_project.sh`.
+- `plugins/codex-runner.15s.py` is a monitor for [Continuum for Codex](https://github.com/cthoey/continuum-codex).
+- It reads runner state from `CONTINUUM_RUNNER_ROOT` first, then from `~/.config/continuum/config.toml`, then falls back to `RELAY_RUNNER_ROOT` and `CODEX_RUNNER_ROOT` for compatibility. If none are set, it defaults to `~/continuum-runner`.
+- The plugin reads `projects.json`, per-project `status.json`, `codex.log`, `docs/codex-progress.md`, and lightweight restart marker files from the configured Continuum runner root.
+- `Start project`, `Restart project`, `Stop after pass`, and `Stop now` are thin wrappers around the Continuum runner scripts `launch_project.sh`, `restart_project.sh`, `stop_project.sh`, and `stop_now_project.sh`. Those scripts carry the actual detached/service-aware behavior.
 - The Continuum top bar shows how many autonomous workers are actively running and appends short
   summaries such as `1 restart pending`, `2 restarts pending`, stale, waiting, blocked, or failed
   counts when relevant.
@@ -81,10 +81,13 @@ vendor/
   `status.json`, last worker activity from `codex.log` mtime, and last progress checkpoint from
   `docs/codex-progress.md` mtime when that file exists. Every timestamp is shown in local time with
   a human-readable relative age such as `6s ago` or `3m ago`.
+- Each project dropdown also exposes direct actions for `Tail codex.log`, `Tail supervisor log`,
+  `Open project folder`, `Open runner folder`, `Open status.json`, `Open codex.log`, `Open restart state`,
+  and `Open codex-progress.md` when those files exist.
 - If a graceful restart has been requested but the current pass is still finishing, the Continuum
   dropdown shows a restart-pending line sourced from the runner's lightweight
   `restart.<project>.json` marker file.
-- When the runner scripts are updated to use macOS `caffeinate`, SwiftBar inherits that behavior
+- Continuum manages sleep prevention itself in the runner on macOS. SwiftBar inherits that behavior
   automatically because it launches projects through the runner scripts rather than managing power
   state itself.
 - The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.

@@ -14,8 +14,8 @@ SwiftBar plugins for machine and workflow status items on macOS.
 - `plugins/disk-space.1m.sh`: APFS-aware disk space monitor for the internal drive plus mounted local volumes, with low-space alerts in the dropdown.
 - `plugins/temperature.15s.py`: Apple Silicon temperature monitor backed by `iSMC`, with CPU, GPU, battery, and hottest-sensor details in the dropdown.
 - `plugins/apple-container.15s.py`: Apple Container overview with system, start/stop/restart, prune, logs, and per-container lifecycle actions.
-- `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown.
-- `plugins/codex-runner.15s.py`: Codex autonomous runner monitor with per-project status, recent log context, and quick start/stop/log actions.
+- `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown, including friendly labels for Codex autonomous supervisors and workers.
+- `plugins/codex-runner.15s.py`: Continuum monitor for Codex autonomous workers, with top-bar worker counts, per-project status, low-overhead timing signals, recent log context, and quick start/restart/stop/log actions.
 
 ## Setup
 
@@ -69,8 +69,28 @@ vendor/
 ## Notes
 
 - SwiftBar plugin filenames follow `{name}.{interval}.{ext}`, so `cpu-memory.5s.sh` refreshes every 5 seconds.
-- `plugins/codex-runner.15s.py` reads Codex runner state from `CODEX_RUNNER_ROOT`, which defaults to `/Users/choey/Documents/10-projects/shared-tools/codex-runner`.
+- `plugins/codex-runner.15s.py` reads runner state from `CONTINUUM_RUNNER_ROOT` first, then from `~/.config/continuum/config.toml`, then falls back to `RELAY_RUNNER_ROOT` and `CODEX_RUNNER_ROOT` for compatibility. If none are set, it defaults to `~/continuum-runner`.
+- The Continuum plugin uses the runner scripts in the configured runner root. `Start project`,
+  `Restart project`, `Stop after pass`, and `Stop now` are thin wrappers around
+  `launch_project.sh`, `restart_project.sh`, `stop_project.sh`, and `stop_now_project.sh`.
+- The Continuum top bar shows how many autonomous workers are actively running and appends short
+  summaries such as `1 restart pending`, `2 restarts pending`, stale, waiting, blocked, or failed
+  counts when relevant.
+- In each project dropdown, the plugin shows low-overhead time signals derived from existing files:
+  supervisor start and age from the supervisor pidfile, current pass start and age from
+  `status.json`, last worker activity from `codex.log` mtime, and last progress checkpoint from
+  `docs/codex-progress.md` mtime when that file exists. Every timestamp is shown in local time with
+  a human-readable relative age such as `6s ago` or `3m ago`.
+- If a graceful restart has been requested but the current pass is still finishing, the Continuum
+  dropdown shows a restart-pending line sourced from the runner's lightweight
+  `restart.<project>.json` marker file.
+- When the runner scripts are updated to use macOS `caffeinate`, SwiftBar inherits that behavior
+  automatically because it launches projects through the runner scripts rather than managing power
+  state itself.
 - The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.
+- The CPU/memory plugin derives friendly process labels for known Codex runner commands, such as
+  `codex-supervisor[MMXDecomp]` and `codex-worker[MMXDecomp]`, so active autonomous jobs are easier
+  to identify in the dropdown.
 - `scripts/install-ismc.sh` downloads the official `iSMC` release, verifies its checksum, and installs it into `vendor/ismc/iSMC`.
 - `plugins/temperature.15s.py` prefers `vendor/ismc/iSMC` and falls back to `iSMC` or `ismc` on `PATH`, so a Homebrew install works too.
 - The `iSMC` binary is not checked into the repo. It is installed locally into `vendor/ismc/` by the helper script.

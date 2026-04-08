@@ -26,6 +26,7 @@ except ModuleNotFoundError:
     tomllib = None
 
 DEFAULT_RUNNER_ROOT = str(Path("~/continuum-runner").expanduser())
+DEFAULT_CODEX_HOME = str(Path("~/.codex").expanduser())
 CONFIG_PATH_DEFAULT = Path(
     os.environ.get(
         "CONTINUUM_CONFIG",
@@ -62,26 +63,83 @@ def read_simple_toml(path: Path) -> dict[str, Any]:
         return {}
 
     data: dict[str, Any] = {}
+    section_path: list[str] = []
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = strip_toml_comment(raw_line)
         if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section_path = split_toml_path(line[1:-1].strip())
             continue
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
+        key = key.strip().strip('"')
+        value = parse_toml_value(value)
         if not key:
             continue
-        if value.startswith('"') and value.endswith('"') and len(value) >= 2:
-            data[key] = value[1:-1]
-        elif value.startswith("'") and value.endswith("'") and len(value) >= 2:
-            data[key] = value[1:-1]
-        elif value.lower() in {"true", "false"}:
-            data[key] = value.lower() == "true"
-        else:
-            data[key] = value
+        node = data
+        for part in section_path:
+            node = node.setdefault(part, {})
+        node[key] = value
     return data
+
+
+def strip_toml_comment(line: str) -> str:
+    in_string = False
+    escaped = False
+    result: list[str] = []
+    for char in line:
+        if char == '"' and not escaped:
+            in_string = not in_string
+        if char == "#" and not in_string:
+            break
+        result.append(char)
+        escaped = (char == "\\") and not escaped
+        if char != "\\":
+            escaped = False
+    return "".join(result).strip()
+
+
+def split_toml_path(raw: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    in_string = False
+    escaped = False
+    for char in raw:
+        if char == '"' and not escaped:
+            in_string = not in_string
+            continue
+        if char == "." and not in_string:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            escaped = False
+            continue
+        current.append(char)
+        escaped = (char == "\\") and not escaped
+        if char != "\\":
+            escaped = False
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def parse_toml_value(raw: str) -> Any:
+    value = raw.strip()
+    if not value:
+        return ""
+    if value.startswith('"') and value.endswith('"'):
+        return bytes(value[1:-1], "utf-8").decode("unicode_escape")
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    if re.fullmatch(r"[+-]?\d+", value):
+        return int(value)
+    return value
 
 
 def resolve_runner_root() -> tuple[Path, Path | None]:
@@ -101,9 +159,19 @@ def resolve_runner_root() -> tuple[Path, Path | None]:
     )
 
 
+def resolve_codex_config_path() -> Path:
+    explicit = os.environ.get("CONTINUUM_CODEX_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser()
+    codex_home = os.environ.get("CODEX_HOME", DEFAULT_CODEX_HOME)
+    return Path(codex_home).expanduser() / "config.toml"
+
+
 RUNNER_ROOT, USER_CONFIG_PATH = resolve_runner_root()
 CONFIG_PATH = RUNNER_ROOT / "projects.json"
 RUNTIME_ROOT = RUNNER_ROOT / "runtime"
+CODEX_CONFIG_PATH = resolve_codex_config_path()
+CODEX_CONFIG = read_toml(CODEX_CONFIG_PATH) if CODEX_CONFIG_PATH.exists() else {}
 
 
 def shell_quote(value: str) -> str:
@@ -145,6 +213,51 @@ def read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def lookup_path(data: dict[str, Any], *parts: str) -> Any:
+    node: Any = data
+    for part in parts:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def normalize_text_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def resolve_effective_model_reasoning(
+    project: dict[str, Any],
+    status: dict[str, Any],
+    default_profile: str | None,
+) -> tuple[str | None, str | None]:
+    effective_model = normalize_text_value(status.get("effective_model"))
+    effective_reasoning = normalize_text_value(status.get("effective_reasoning_effort"))
+    if effective_model or effective_reasoning:
+        return effective_model, effective_reasoning
+
+    profile = normalize_text_value(project.get("profile")) or normalize_text_value(default_profile)
+    profile_model = lookup_path(CODEX_CONFIG, "profiles", profile, "model") if profile else None
+    profile_reasoning = (
+        lookup_path(CODEX_CONFIG, "profiles", profile, "model_reasoning_effort") if profile else None
+    )
+    effective_model = (
+        normalize_text_value(project.get("model"))
+        or normalize_text_value(profile_model)
+        or normalize_text_value(CODEX_CONFIG.get("model"))
+    )
+    effective_reasoning = (
+        normalize_text_value(project.get("reasoning_effort"))
+        or normalize_text_value(profile_reasoning)
+        or normalize_text_value(CODEX_CONFIG.get("model_reasoning_effort"))
+    )
+    return effective_model, effective_reasoning
+
+
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
@@ -165,6 +278,10 @@ def load_status(project_name: str) -> dict[str, Any] | None:
 
 def load_restart_state(project_name: str) -> dict[str, Any] | None:
     return read_json(RUNNER_ROOT / f"restart.{project_name}.json")
+
+
+def load_control_state(project_name: str) -> dict[str, Any] | None:
+    return read_json(RUNNER_ROOT / f"control.{project_name}.json")
 
 
 def iso_to_datetime(value: str | None) -> dt.datetime | None:
@@ -290,7 +407,13 @@ def tail_lines(path: Path, max_lines: int = 6, max_bytes: int = 16384) -> list[s
     return filtered
 
 
-def status_color(status: str, log_path: Path) -> str:
+def status_color(status: str, log_path: Path, control_action: str = "", state_kind: str = "") -> str:
+    if control_action in {"stop_after_pass", "pause_after_pass"} and state_kind in {
+        "running",
+        "inactive",
+        "rate_limited_wait",
+    }:
+        return COLOR_WAIT if file_is_fresh(log_path, 120) else COLOR_STALE
     normalized = (status or "").upper()
     if normalized == "RUNNING":
         return COLOR_RUNNING if file_is_fresh(log_path, 120) else COLOR_STALE
@@ -307,7 +430,11 @@ def status_color(status: str, log_path: Path) -> str:
     return COLOR_UNKNOWN
 
 
-def short_status(status: str, log_path: Path) -> str:
+def short_status(status: str, log_path: Path, control_action: str = "", state_kind: str = "") -> str:
+    if control_action == "stop_after_pass" and state_kind in {"running", "inactive", "rate_limited_wait"}:
+        return "STOP"
+    if control_action == "pause_after_pass" and state_kind in {"running", "inactive", "rate_limited_wait"}:
+        return "PAUSE"
     normalized = (status or "").upper()
     if normalized == "RUNNING":
         return "RUN" if file_is_fresh(log_path, 120) else "STALE"
@@ -336,6 +463,8 @@ def render_header(project_rows: list[dict[str, Any]]) -> None:
     waiting = sum(1 for row in project_rows if row["status"] == "RATE_LIMIT_WAIT")
     stale = sum(1 for row in project_rows if row["short_status"] == "STALE")
     done = sum(1 for row in project_rows if row["status"] == "DONE")
+    stopping = sum(1 for row in project_rows if row["control_action"] == "stop_after_pass")
+    pausing = sum(1 for row in project_rows if row["control_action"] == "pause_after_pass")
     restarting = sum(
         1
         for row in project_rows
@@ -347,6 +476,12 @@ def render_header(project_rows: list[dict[str, Any]]) -> None:
     if restarting:
         noun = "restart" if restarting == 1 else "restarts"
         extras.append(f"{restarting} {noun} pending")
+    if stopping:
+        noun = "project" if stopping == 1 else "projects"
+        extras.append(f"{stopping} {noun} stopping")
+    if pausing:
+        noun = "project" if pausing == 1 else "projects"
+        extras.append(f"{pausing} {noun} pausing")
     if stale:
         extras.append(f"{stale} stale")
     if waiting:
@@ -375,6 +510,8 @@ def render_header(project_rows: list[dict[str, Any]]) -> None:
 
 def main() -> int:
     projects = load_projects()
+    config_payload = read_json(CONFIG_PATH) or {}
+    default_profile = normalize_text_value(config_payload.get("default_profile"))
     rows: list[dict[str, Any]] = []
     for project in projects:
         name = str(project.get("name") or "unknown")
@@ -387,13 +524,30 @@ def main() -> int:
         progress_log_path = project_path / "docs" / "codex-progress.md"
         status = load_status(name) or {}
         restart_state = load_restart_state(name) or {}
+        control_state = load_control_state(name) or {}
         last_status = str(status.get("last_status") or ("IDLE" if not status else "UNKNOWN")).upper()
+        state_kind = str(status.get("state_kind") or "")
+        control_action = str(
+            control_state.get("action")
+            or status.get("control_action")
+            or ""
+        )
+        control_phase = str(
+            control_state.get("phase")
+            or status.get("control_phase")
+            or ""
+        )
         updated_at = str(status.get("updated_at") or "")
         updated_dt = iso_to_datetime(updated_at)
         log_dt = file_mtime(log_path)
         progress_dt = file_mtime(progress_log_path)
         supervisor_started_dt = file_mtime(supervisor_pidfile)
         restart_requested_dt = iso_to_datetime(str(restart_state.get("requested_at") or ""))
+        effective_model, effective_reasoning_effort = resolve_effective_model_reasoning(
+            project,
+            status,
+            default_profile,
+        )
         rows.append(
             {
                 "name": name,
@@ -404,12 +558,15 @@ def main() -> int:
                 "supervisor_pidfile": supervisor_pidfile,
                 "restart_state_path": restart_state_path,
                 "progress_log_path": progress_log_path,
+                "state_kind": state_kind,
                 "status": last_status,
-                "short_status": short_status(last_status, log_path),
-                "color": status_color(last_status, log_path),
+                "short_status": short_status(last_status, log_path, control_action, state_kind),
+                "color": status_color(last_status, log_path, control_action, state_kind),
                 "phase": str(status.get("phase") or project.get("phase") or "idle"),
                 "pass_num": status.get("pass_num"),
                 "profile": str(status.get("profile") or project.get("profile") or ""),
+                "model": effective_model,
+                "reasoning_effort": effective_reasoning_effort,
                 "updated_at": updated_at,
                 "updated_dt": updated_dt,
                 "log_dt": log_dt,
@@ -418,10 +575,15 @@ def main() -> int:
                 "restart_phase": str(restart_state.get("phase") or ""),
                 "restart_detail": str(restart_state.get("detail") or ""),
                 "restart_requested_dt": restart_requested_dt,
+                "control_action": control_action,
+                "control_phase": control_phase,
                 "status_detail": str(status.get("status_detail") or ""),
                 "log_age": file_age(log_path),
             }
         )
+
+        rows[-1]["short_status"] = short_status(last_status, log_path, control_action, state_kind)
+        rows[-1]["color"] = status_color(last_status, log_path, control_action, state_kind)
 
     render_header(rows)
     print("---")
@@ -452,6 +614,10 @@ def main() -> int:
             print("--Pass: not started")
 
         print(f"--Profile: {row['profile'] or 'default'}")
+        if row["model"]:
+            print(f"--Model: {row['model']}")
+        if row["reasoning_effort"]:
+            print(f"--Reasoning: {row['reasoning_effort']}")
         if row["supervisor_started_dt"] is not None:
             print(f"--Supervisor started: {format_time_with_age(row['supervisor_started_dt'])}")
             print(f"--Supervisor age: {duration_since(row['supervisor_started_dt'])}")
@@ -490,6 +656,13 @@ def main() -> int:
         if row["status_detail"]:
             detail = row["status_detail"].replace("\n", " ")
             print(f"--Detail: {detail}")
+
+        if row["control_action"] == "stop_after_pass":
+            phase = row["control_phase"] or "requested"
+            print(f"--Stop status: {phase}")
+        elif row["control_action"] == "pause_after_pass":
+            phase = row["control_phase"] or "requested"
+            print(f"--Pause status: {phase}")
 
         recent = tail_lines(row["log_path"])
         if recent:

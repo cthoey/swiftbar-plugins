@@ -16,6 +16,7 @@ SwiftBar plugins for machine and workflow status items on macOS.
 - `plugins/apple-container.15s.py`: Apple Container overview with system, start/stop/restart, prune, logs, and per-container lifecycle actions.
 - `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown, including friendly labels for Codex autonomous supervisors and workers.
 - `plugins/codex-runner.15s.py`: Continuum monitor for [Continuum for Codex](https://github.com/cthoey/continuum-codex), with top-bar worker counts, per-project status, low-overhead timing signals, recent log context, and quick start/restart/stop/log actions.
+- `plugins/leadops.1m.py`: LeadOps daily brief monitor with packet counts, surfaced targets, digest actions, quick status changes, and fast access to the workspace, briefs, and logs.
 
 ## Setup
 
@@ -58,6 +59,7 @@ plugins/
   codex-runner.15s.py
   cpu-memory.5s.sh
   disk-space.1m.sh
+  leadops.1m.py
   temperature.15s.py
 scripts/
   install-ismc.sh
@@ -74,8 +76,10 @@ vendor/
 - The plugin reads `projects.json`, per-project `status.json`, `codex.log`, `docs/codex-progress.md`, and lightweight restart marker files from the configured Continuum runner root.
 - `Start project`, `Restart project`, `Stop after pass`, and `Stop now` are thin wrappers around the Continuum runner scripts `launch_project.sh`, `restart_project.sh`, `stop_project.sh`, and `stop_now_project.sh`. Those scripts carry the actual detached/service-aware behavior.
 - The Continuum top bar shows how many autonomous workers are actively running and appends short
-  summaries such as `1 restart pending`, `2 restarts pending`, stale, waiting, blocked, or failed
-  counts when relevant.
+  summaries such as `1 restart pending`, `2 restarts pending`, stale, waiting, projects that need
+  review, blocked, or failed counts when relevant.
+- When a project reports `STATUS: BLOCKED: human review needed: ...`, the plugin surfaces that as a
+  distinct `REVIEW` handoff state instead of a generic blocked state.
 - In each project dropdown, the plugin shows low-overhead time signals derived from existing files:
   supervisor start and age from the supervisor pidfile, current pass start and age from
   `status.json`, last worker activity from `codex.log` mtime, and last progress checkpoint from
@@ -91,6 +95,8 @@ vendor/
   automatically because it launches projects through the runner scripts rather than managing power
   state itself.
 - The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.
+- `plugins/leadops.1m.py` expects a LeadOps workspace at `~/Library/Application Support/LeadOps/default` by default. Override it with `LEADOPS_WORKSPACE` if needed.
+- `plugins/leadops.1m.py` looks for `leadops` and `leadops-daily` on `PATH` first, then falls back to a sibling `leadops/` repo checkout next to this repository.
 - The CPU/memory plugin derives friendly process labels for known Codex runner commands, such as
   `codex-supervisor[MMXDecomp]` and `codex-worker[MMXDecomp]`, so active autonomous jobs are easier
   to identify in the dropdown.

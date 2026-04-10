@@ -43,6 +43,7 @@ COLOR_WAIT = "#ffb703"
 COLOR_IDLE = "#6c757d"
 COLOR_UNKNOWN = "#7b2cbf"
 COLOR_STALE = "#ff7f11"
+HUMAN_REVIEW_REASON = "human_review_needed"
 
 
 def read_toml(path: Path) -> dict[str, Any]:
@@ -407,13 +408,28 @@ def tail_lines(path: Path, max_lines: int = 6, max_bytes: int = 16384) -> list[s
     return filtered
 
 
-def status_color(status: str, log_path: Path, control_action: str = "", state_kind: str = "") -> str:
+def is_review_needed(state_kind: str = "", blocked_reason_kind: str = "", status_detail: str = "") -> bool:
+    if state_kind == "review_needed" or blocked_reason_kind == HUMAN_REVIEW_REASON:
+        return True
+    return status_detail.strip().lower().startswith("human review needed")
+
+
+def status_color(
+    status: str,
+    log_path: Path,
+    control_action: str = "",
+    state_kind: str = "",
+    blocked_reason_kind: str = "",
+    status_detail: str = "",
+) -> str:
     if control_action in {"stop_after_pass", "pause_after_pass"} and state_kind in {
         "running",
         "inactive",
         "rate_limited_wait",
     }:
         return COLOR_WAIT if file_is_fresh(log_path, 120) else COLOR_STALE
+    if is_review_needed(state_kind, blocked_reason_kind, status_detail):
+        return COLOR_BLOCKED
     normalized = (status or "").upper()
     if normalized == "RUNNING":
         return COLOR_RUNNING if file_is_fresh(log_path, 120) else COLOR_STALE
@@ -430,11 +446,20 @@ def status_color(status: str, log_path: Path, control_action: str = "", state_ki
     return COLOR_UNKNOWN
 
 
-def short_status(status: str, log_path: Path, control_action: str = "", state_kind: str = "") -> str:
+def short_status(
+    status: str,
+    log_path: Path,
+    control_action: str = "",
+    state_kind: str = "",
+    blocked_reason_kind: str = "",
+    status_detail: str = "",
+) -> str:
     if control_action == "stop_after_pass" and state_kind in {"running", "inactive", "rate_limited_wait"}:
         return "STOP"
     if control_action == "pause_after_pass" and state_kind in {"running", "inactive", "rate_limited_wait"}:
         return "PAUSE"
+    if is_review_needed(state_kind, blocked_reason_kind, status_detail):
+        return "REVIEW"
     normalized = (status or "").upper()
     if normalized == "RUNNING":
         return "RUN" if file_is_fresh(log_path, 120) else "STALE"
@@ -458,7 +483,12 @@ def render_header(project_rows: list[dict[str, Any]]) -> None:
 
     total = len(project_rows)
     running = sum(1 for row in project_rows if row["short_status"] == "RUN")
-    blocked = sum(1 for row in project_rows if row["status"] == "BLOCKED")
+    review_needed = sum(1 for row in project_rows if row["short_status"] == "REVIEW")
+    blocked = sum(
+        1
+        for row in project_rows
+        if row["status"] == "BLOCKED" and row["short_status"] != "REVIEW"
+    )
     failed = sum(1 for row in project_rows if row["status"] == "FAILED")
     waiting = sum(1 for row in project_rows if row["status"] == "RATE_LIMIT_WAIT")
     stale = sum(1 for row in project_rows if row["short_status"] == "STALE")
@@ -486,6 +516,9 @@ def render_header(project_rows: list[dict[str, Any]]) -> None:
         extras.append(f"{stale} stale")
     if waiting:
         extras.append(f"{waiting} waiting")
+    if review_needed:
+        noun = "project" if review_needed == 1 else "projects"
+        extras.append(f"{review_needed} {noun} need review")
     if blocked:
         extras.append(f"{blocked} blocked")
     if failed:
@@ -496,7 +529,7 @@ def render_header(project_rows: list[dict[str, Any]]) -> None:
         title = f"{title}, {', '.join(extras[:2])}"
 
     color = COLOR_IDLE
-    if blocked or failed:
+    if review_needed or blocked or failed:
         color = COLOR_BLOCKED
     elif waiting or stale:
         color = COLOR_WAIT
@@ -537,6 +570,8 @@ def main() -> int:
             or status.get("control_phase")
             or ""
         )
+        blocked_reason_kind = str(status.get("blocked_reason_kind") or "")
+        status_detail = str(status.get("status_detail") or "")
         updated_at = str(status.get("updated_at") or "")
         updated_dt = iso_to_datetime(updated_at)
         log_dt = file_mtime(log_path)
@@ -560,8 +595,22 @@ def main() -> int:
                 "progress_log_path": progress_log_path,
                 "state_kind": state_kind,
                 "status": last_status,
-                "short_status": short_status(last_status, log_path, control_action, state_kind),
-                "color": status_color(last_status, log_path, control_action, state_kind),
+                "short_status": short_status(
+                    last_status,
+                    log_path,
+                    control_action,
+                    state_kind,
+                    blocked_reason_kind,
+                    status_detail,
+                ),
+                "color": status_color(
+                    last_status,
+                    log_path,
+                    control_action,
+                    state_kind,
+                    blocked_reason_kind,
+                    status_detail,
+                ),
                 "phase": str(status.get("phase") or project.get("phase") or "idle"),
                 "pass_num": status.get("pass_num"),
                 "profile": str(status.get("profile") or project.get("profile") or ""),
@@ -577,13 +626,28 @@ def main() -> int:
                 "restart_requested_dt": restart_requested_dt,
                 "control_action": control_action,
                 "control_phase": control_phase,
-                "status_detail": str(status.get("status_detail") or ""),
+                "blocked_reason_kind": blocked_reason_kind,
+                "status_detail": status_detail,
                 "log_age": file_age(log_path),
             }
         )
 
-        rows[-1]["short_status"] = short_status(last_status, log_path, control_action, state_kind)
-        rows[-1]["color"] = status_color(last_status, log_path, control_action, state_kind)
+        rows[-1]["short_status"] = short_status(
+            last_status,
+            log_path,
+            control_action,
+            state_kind,
+            blocked_reason_kind,
+            status_detail,
+        )
+        rows[-1]["color"] = status_color(
+            last_status,
+            log_path,
+            control_action,
+            state_kind,
+            blocked_reason_kind,
+            status_detail,
+        )
 
     render_header(rows)
     print("---")
@@ -656,6 +720,8 @@ def main() -> int:
         if row["status_detail"]:
             detail = row["status_detail"].replace("\n", " ")
             print(f"--Detail: {detail}")
+        if row["blocked_reason_kind"] == HUMAN_REVIEW_REASON:
+            print("--Handoff: human review needed")
 
         if row["control_action"] == "stop_after_pass":
             phase = row["control_phase"] or "requested"

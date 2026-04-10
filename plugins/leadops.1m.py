@@ -25,6 +25,7 @@ COLOR_WARN = "#ff7f11"
 COLOR_BAD = "#d7263d"
 COLOR_IDLE = "#6c757d"
 COLOR_INFO = "#457b9d"
+COLOR_ACTION = "#0d6efd"
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 PLUGIN_REPO_ROOT = PLUGIN_DIR.parent
@@ -36,6 +37,11 @@ DEFAULT_WORKSPACE = Path(
     )
 ).expanduser()
 DEFAULT_LAUNCHD_LABEL = os.environ.get("LEADOPS_LAUNCHD_LABEL", "dev.leadops.daily")
+APPROACHES = (
+    ("early_product", "Founder + Connector Mix"),
+    ("builder_need", "Founder Needs Builder"),
+    ("place_watch", "Public Founder Asks"),
+)
 
 
 def _first_existing(*candidates: object) -> str:
@@ -128,6 +134,14 @@ def iso_datetime_or_none(value: str) -> dt.datetime | None:
         return None
 
 
+def local_file_mtime(path: Path) -> dt.datetime | None:
+    try:
+        timestamp = path.stat().st_mtime
+    except OSError:
+        return None
+    return dt.datetime.fromtimestamp(timestamp).astimezone()
+
+
 def iso_date_plus(days: int, *, base: dt.date | None = None) -> str:
     anchor = base or dt.date.today()
     return (anchor + dt.timedelta(days=days)).isoformat()
@@ -197,23 +211,83 @@ def load_run_state(workspace: Path) -> dict[str, str] | None:
     return payload
 
 
-def read_launchd_schedule(label: str) -> str | None:
+def packet_last_updated(packet_dir: Path | None) -> dt.datetime | None:
+    if packet_dir is None:
+        return None
+    for candidate in (
+        packet_dir / "daily-brief.json",
+        packet_dir / "daily-brief.md",
+        packet_dir / "daily-digest.html",
+        packet_dir / "daily-digest.txt",
+    ):
+        if candidate.exists():
+            updated_at = local_file_mtime(candidate)
+            if updated_at is not None:
+                return updated_at
+    return None
+
+
+def read_launchd_times(label: str) -> tuple[tuple[int, int], ...]:
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     if not plist_path.exists():
-        return None
+        return ()
     try:
         with plist_path.open("rb") as fh:
             payload = plistlib.load(fh)
     except Exception:
-        return None
+        return ()
     interval = payload.get("StartCalendarInterval")
-    if not isinstance(interval, dict):
+    intervals = interval if isinstance(interval, list) else [interval]
+    parsed: list[tuple[int, int]] = []
+    for item in intervals:
+        if not isinstance(item, dict):
+            continue
+        hour = item.get("Hour")
+        minute = item.get("Minute")
+        if isinstance(hour, int) and isinstance(minute, int):
+            parsed.append((hour, minute))
+    return tuple(sorted(set(parsed)))
+
+
+def next_scheduled_run(label: str) -> dt.datetime | None:
+    times = read_launchd_times(label)
+    if not times:
         return None
-    hour = interval.get("Hour")
-    minute = interval.get("Minute")
-    if not isinstance(hour, int) or not isinstance(minute, int):
+
+    now = dt.datetime.now().astimezone()
+    today = now.date()
+    candidates = [
+        dt.datetime.combine(today, dt.time(hour=hour, minute=minute), tzinfo=now.tzinfo)
+        for hour, minute in times
+    ]
+    future_today = [candidate for candidate in candidates if candidate > now]
+    if future_today:
+        return min(future_today)
+    first_hour, first_minute = times[0]
+    tomorrow = today + dt.timedelta(days=1)
+    return dt.datetime.combine(tomorrow, dt.time(hour=first_hour, minute=first_minute), tzinfo=now.tzinfo)
+
+
+def schedule_summary(label: str) -> tuple[str | None, str | None]:
+    times = read_launchd_times(label)
+    if not times:
+        return None, None
+
+    times_text = ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in times)
+    next_run = next_scheduled_run(label)
+    if next_run is None:
+        return times_text, None
+
+    today = dt.datetime.now().astimezone().date()
+    day_label = "today" if next_run.date() == today else "tomorrow"
+    next_text = f"{day_label} {next_run.strftime('%H:%M')}"
+    return times_text, next_text
+
+
+def format_stamp(value: dt.datetime | None) -> str | None:
+    if value is None:
         return None
-    return f"{hour:02d}:{minute:02d}"
+    return value.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def mark_status_command(
@@ -239,8 +313,59 @@ def mark_status_command(
     return exec_action(LEADOPS_SWIFTBAR_BIN, *params, refresh=True)
 
 
-def copy_full_draft_command(text: str) -> str:
-    return f"printf %s {shell_quote(text)} | pbcopy"
+def copy_draft_action(workspace: Path, packet_date: str, target_id: int) -> dict[str, str]:
+    if not LEADOPS_SWIFTBAR_BIN:
+        return shell_action("echo 'LeadOps SwiftBar helper not found.'; exit 1", terminal=False, refresh=False)
+    return exec_action(
+        LEADOPS_SWIFTBAR_BIN,
+        "copy-draft",
+        str(workspace),
+        packet_date,
+        str(target_id),
+        refresh=False,
+    )
+
+
+def compact_text(text: str, limit: int = 60) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 1)].rstrip() + "…"
+
+
+def short_source_label(source: str) -> str:
+    source = source.strip()
+    if not source:
+        return "-"
+    if ":" in source:
+        return source.split(":")[-1]
+    return source
+
+
+def best_signal_line(assessment: dict[str, Any]) -> str:
+    why_now = str(assessment.get("why_now", "") or "").strip()
+    evidence = assessment.get("evidence", [])
+    if why_now:
+        return compact_text(why_now, limit=64)
+    if isinstance(evidence, list) and evidence:
+        return compact_text(str(evidence[0]), limit=64)
+    return ""
+
+
+def run_approach_action(workspace: Path, approach_name: str) -> dict[str, str]:
+    if not LEADOPS_SWIFTBAR_BIN:
+        return shell_action("echo 'LeadOps SwiftBar helper not found.'; exit 1", terminal=False, refresh=False)
+    return exec_action(
+        LEADOPS_SWIFTBAR_BIN,
+        "run-daily",
+        str(workspace),
+        "--approach",
+        approach_name,
+        "--discover-per-query-limit",
+        "2",
+        "--send-digest",
+        refresh=True,
+    )
 
 
 def topbar_text(packet: dict[str, Any] | None, workspace: Path) -> tuple[str, str]:
@@ -303,34 +428,26 @@ def render_target_section(title: str, items: list[dict[str, Any]], *, workspace:
         name = str(target.get("name", "Unknown target"))
         kind = str(target.get("kind", "-"))
         status = str(target.get("status", "candidate") or "candidate")
+        source = short_source_label(str(target.get("source", "") or ""))
         score = assessment.get("fit_score", "-")
         confidence = assessment.get("confidence", "-")
         target_url = str(target.get("url", "") or "")
-        print(
-            render_line(
-                f"--{name} [{kind}] \u2022 {score}",
-                color=COLOR_INFO if target_url else COLOR_IDLE,
-            )
-        )
-        why_fit = str(assessment.get("why_fit", "") or "").strip()
-        why_now = str(assessment.get("why_now", "") or "").strip()
+        confidence_text = f"{confidence:.2f}" if isinstance(confidence, (int, float)) else str(confidence)
+        signal = best_signal_line(assessment)
+        risks = assessment.get("risks", [])
+        print(render_line(f"--{name}", color=COLOR_INFO if target_url else COLOR_IDLE))
+        print(f"----{kind} · {status} · score {score} · conf {confidence_text} · src {source}")
+        if signal:
+            print(f"----Signal: {signal}")
+        if isinstance(risks, list) and risks:
+            print(render_line(f"----Risk noted ({len(risks)})", color=COLOR_WARN))
         subject = str(assessment.get("draft_subject", "") or "").strip()
         body = str(assessment.get("draft_body", "") or "").strip()
         full_draft = f"Subject: {subject}\n\n{body}".strip()
-        if why_fit:
-            print(render_line(f"----Why fit: {why_fit}", trim=False, ansi=False))
-        if why_now:
-            print(render_line(f"----Why now: {why_now}", trim=False, ansi=False))
-        print(f"----Status: {status}")
-        print(f"----Confidence: {confidence}")
-        if full_draft:
-            print(render_line("----Copy full draft", **shell_action(copy_full_draft_command(full_draft), refresh=False)))
+        if full_draft and target_id > 0:
+            print(render_line("----Copy full draft", **copy_draft_action(workspace, packet_date, target_id)))
         if target_url:
             print(render_line("----Open target", href=target_url))
-        if subject:
-            print(render_line("----Copy subject", **copy_text_action(subject)))
-        if body:
-            print(render_line("----Copy draft body", **copy_text_action(body)))
         if target_id > 0:
             if section == "new_target":
                 print(
@@ -398,8 +515,9 @@ def print_menu() -> None:
     workspace = DEFAULT_WORKSPACE
     packet, packet_dir = load_latest_packet(workspace)
     run_state = load_run_state(workspace)
-    header, color = topbar_text(packet, workspace)
-    print(render_line(header, color=color))
+    last_updated = packet_last_updated(packet_dir)
+    header, _color = topbar_text(packet, workspace)
+    print(header)
     print("---")
 
     if not workspace.exists():
@@ -412,9 +530,14 @@ def print_menu() -> None:
         print(render_line("LeadOps CLI not found on PATH", color=COLOR_WARN))
     if not LEADOPS_SWIFTBAR_BIN:
         print(render_line("LeadOps SwiftBar helper not found", color=COLOR_WARN))
-    schedule = read_launchd_schedule(DEFAULT_LAUNCHD_LABEL)
-    if schedule:
-        print(f"Scheduled run: {schedule}")
+    last_updated_text = format_stamp(last_updated)
+    if last_updated_text:
+        print(f"Last run: {last_updated_text}")
+    schedule_times, next_run_text = schedule_summary(DEFAULT_LAUNCHD_LABEL)
+    if next_run_text:
+        print(f"Next run: {next_run_text}")
+    if schedule_times:
+        print(f"Schedule: {schedule_times}")
     if run_state:
         started_at = iso_datetime_or_none(run_state.get("started_at", ""))
         pid_text = run_state.get("pid", "?")
@@ -427,22 +550,12 @@ def print_menu() -> None:
         if LEADOPS_SWIFTBAR_BIN:
             print(
                 render_line(
-                    "Run daily now",
-                    **exec_action(
-                        LEADOPS_SWIFTBAR_BIN,
-                        "run-daily",
-                        str(workspace),
-                        "--discover-track",
-                        "connectors",
-                        "--discover-track",
-                        "founders",
-                        "--discover-per-query-limit",
-                        "2",
-                        "--send-digest",
-                        refresh=True,
-                    ),
+                    "Run approach",
+                    color=COLOR_ACTION,
                 )
             )
+            for approach_name, label in APPROACHES:
+                print(render_line(f"--{label}", **run_approach_action(workspace, approach_name)))
         else:
             print(render_line("Run daily now unavailable", color=COLOR_WARN))
     if packet and packet.get("packet_date"):

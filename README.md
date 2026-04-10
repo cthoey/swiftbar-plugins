@@ -16,7 +16,7 @@ SwiftBar plugins for machine and workflow status items on macOS.
 - `plugins/apple-container.15s.py`: Apple Container overview with system, start/stop/restart, prune, logs, and per-container lifecycle actions.
 - `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown, including friendly labels for Codex autonomous supervisors and workers.
 - `plugins/codex-runner.15s.py`: Continuum monitor for [Continuum for Codex](https://github.com/cthoey/continuum-codex), with top-bar worker counts, per-project status, low-overhead timing signals, recent log context, and quick start/restart/stop/log actions.
-- `plugins/leadops.1m.py`: LeadOps daily brief monitor with packet counts, surfaced targets, digest actions, quick status changes, and fast access to the workspace, briefs, and logs.
+- `plugins/leadops.1m.py`: LeadOps daily brief monitor with packet counts, per-approach run actions, digest actions, quick status changes, and fast access to the workspace, briefs, and logs.
 
 ## Setup
 
@@ -97,6 +97,7 @@ vendor/
 - The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.
 - `plugins/leadops.1m.py` expects a LeadOps workspace at `~/Library/Application Support/LeadOps/default` by default. Override it with `LEADOPS_WORKSPACE` if needed.
 - `plugins/leadops.1m.py` looks for `leadops` and `leadops-daily` on `PATH` first, then falls back to a sibling `leadops/` repo checkout next to this repository.
+- The LeadOps dropdown can kick off the built-in approaches `Founder + Connector Mix` (`early_product`), `Founder Needs Builder` (`builder_need`), and `Public Founder Asks` (`place_watch`) directly through the repo's `leadops-swiftbar` helper.
 - The CPU/memory plugin derives friendly process labels for known Codex runner commands, such as
   `codex-supervisor[MMXDecomp]` and `codex-worker[MMXDecomp]`, so active autonomous jobs are easier
   to identify in the dropdown.

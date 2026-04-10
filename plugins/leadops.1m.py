@@ -67,6 +67,7 @@ LEADOPS_DAILY_BIN = os.environ.get("LEADOPS_DAILY_BIN") or _first_existing(
     SIBLING_LEADOPS_ROOT / "bin" / "leadops-daily",
 )
 LEADOPS_SWIFTBAR_BIN = os.environ.get("LEADOPS_SWIFTBAR_BIN") or _first_existing(
+    shutil.which("leadops-swiftbar"),
     SIBLING_LEADOPS_ROOT / "bin" / "leadops-swiftbar",
 )
 
@@ -363,7 +364,6 @@ def run_approach_action(workspace: Path, approach_name: str) -> dict[str, str]:
         approach_name,
         "--discover-per-query-limit",
         "2",
-        "--send-digest",
         refresh=True,
     )
 
@@ -516,8 +516,8 @@ def print_menu() -> None:
     packet, packet_dir = load_latest_packet(workspace)
     run_state = load_run_state(workspace)
     last_updated = packet_last_updated(packet_dir)
-    header, _color = topbar_text(packet, workspace)
-    print(header)
+    header, header_color = topbar_text(packet, workspace)
+    print(render_line(header, color=header_color))
     print("---")
 
     if not workspace.exists():

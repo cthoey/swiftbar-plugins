@@ -96,8 +96,9 @@ vendor/
   state itself.
 - The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.
 - `plugins/leadops.1m.py` expects a LeadOps workspace at `~/Library/Application Support/LeadOps/default` by default. Override it with `LEADOPS_WORKSPACE` if needed.
-- `plugins/leadops.1m.py` looks for `leadops` and `leadops-daily` on `PATH` first, then falls back to a sibling `leadops/` repo checkout next to this repository.
+- `plugins/leadops.1m.py` looks for `leadops`, `leadops-daily`, and `leadops-swiftbar` on `PATH` first, then falls back to a sibling `leadops/` repo checkout next to this repository.
 - The LeadOps dropdown can kick off the built-in approaches `Founder + Connector Mix` (`early_product`), `Founder Needs Builder` (`builder_need`), and `Public Founder Asks` (`place_watch`) directly through the repo's `leadops-swiftbar` helper.
+- Running an approach from the dropdown generates the packet only. Sending the digest stays a separate explicit action.
 - The CPU/memory plugin derives friendly process labels for known Codex runner commands, such as
   `codex-supervisor[MMXDecomp]` and `codex-worker[MMXDecomp]`, so active autonomous jobs are easier
   to identify in the dropdown.

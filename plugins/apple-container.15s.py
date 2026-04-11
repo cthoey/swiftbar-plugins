@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # <xbar.title>Apple Container status</xbar.title>
-# <xbar.version>v1.1</xbar.version>
+# <xbar.version>v1.3</xbar.version>
 # <xbar.author>OpenAI</xbar.author>
 # <xbar.desc>Shows running Apple Container containers and live-ish resource stats in your macOS menu bar.</xbar.desc>
 # <xbar.dependencies>python3,container</xbar.dependencies>
@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 CONTAINER_BIN = shutil.which("container")
 if not CONTAINER_BIN:
@@ -76,10 +76,18 @@ def shell_action(command: str, terminal: bool = False, refresh: bool = True) -> 
     return swiftbar_action("/bin/zsh", ["-lc", command], terminal=terminal, refresh=refresh)
 
 
+def container_shell_command(args: List[str]) -> str:
+    return " ".join(shell_quote(part) for part in [CONTAINER_BIN, *args])
+
+
 def open_in_terminal(command: str) -> str:
     # Uses AppleScript so the command opens in a new Terminal tab/window.
     script = f'tell application "Terminal" to do script {json.dumps(command)}'
     return f"bash='/usr/bin/osascript' param0='-e' param1={shell_quote(script)} terminal=false refresh=false"
+
+
+def open_in_browser(url: str) -> str:
+    return swiftbar_action("/usr/bin/open", [url], terminal=False, refresh=False)
 
 
 def get_containers(include_all: bool = False) -> List[Dict[str, Any]]:
@@ -95,20 +103,21 @@ def get_containers(include_all: bool = False) -> List[Dict[str, Any]]:
     return data
 
 
-def get_stats_json() -> Dict[str, Dict[str, Any]]:
+def get_stats_json() -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
     cp = run(["container", "stats", "--format", "json", "--no-stream"])
     if cp.returncode != 0:
-        return {}
+        detail = cp.stderr.strip() or cp.stdout.strip() or "container stats failed"
+        return {}, detail
     try:
         data = json.loads(cp.stdout or "[]")
-    except Exception:
-        return {}
+    except Exception as exc:
+        return {}, f"container stats returned invalid JSON: {exc}"
     out: Dict[str, Dict[str, Any]] = {}
     for item in data:
         cid = item.get("id")
         if cid:
             out[cid] = item
-    return out
+    return out, None
 
 
 def load_cpu_cache() -> Dict[str, Any]:
@@ -156,7 +165,7 @@ def cpu_percents_from_stats(stats_json: Dict[str, Dict[str, Any]]) -> Dict[str, 
 def system_status() -> str:
     cp = run(["container", "system", "status"])
     if cp.returncode != 0:
-        return "stopped"
+        raise RuntimeError(cp.stderr.strip() or cp.stdout.strip() or "container system status failed")
 
     for line in cp.stdout.splitlines():
         parts = re.split(r"\s{2,}", line.strip())
@@ -172,6 +181,50 @@ def container_status(item: Dict[str, Any]) -> str:
 
 def published_ports(item: Dict[str, Any]) -> List[Dict[str, Any]]:
     return item.get("configuration", {}).get("publishedPorts") or []
+
+
+def normalized_host_address(host_address: str) -> str:
+    host = (host_address or "").strip()
+    if not host or host in {"0.0.0.0", "::", "[::]", "*"}:
+        return "localhost"
+    return host
+
+
+def browser_url(host_address: str, host_port: Any) -> str:
+    try:
+        port = int(host_port)
+    except (TypeError, ValueError):
+        return ""
+
+    host = normalized_host_address(host_address)
+    if ":" in host and not host.startswith("[") and host != "localhost":
+        host = f"[{host}]"
+
+    if port == 80:
+        return f"http://{host}"
+    if port == 443:
+        return f"https://{host}"
+
+    scheme = "https" if port == 8443 else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+def browser_urls(item: Dict[str, Any]) -> List[str]:
+    urls: List[str] = []
+    seen = set()
+
+    for port in published_ports(item):
+        if str(port.get("proto") or "tcp").lower() != "tcp":
+            continue
+
+        url = browser_url(str(port.get("hostAddress") or "localhost"), port.get("hostPort"))
+        if not url or url in seen:
+            continue
+
+        seen.add(url)
+        urls.append(url)
+
+    return urls
 
 
 def port_summary(item: Dict[str, Any]) -> str:
@@ -192,26 +245,40 @@ def port_summary(item: Dict[str, Any]) -> str:
 
 
 def net_text(item: Dict[str, Any]) -> str:
+    if not item:
+        return "unavailable"
     return f"{human_bytes(float(item.get('networkRxBytes', 0) or 0))} / {human_bytes(float(item.get('networkTxBytes', 0) or 0))}"
 
 
 def block_text(item: Dict[str, Any]) -> str:
+    if not item:
+        return "unavailable"
     return f"{human_bytes(float(item.get('blockReadBytes', 0) or 0))} / {human_bytes(float(item.get('blockWriteBytes', 0) or 0))}"
 
 
 def memory_text(stats: Dict[str, Any], fallback_limit: Any = None) -> str:
-    used = float(stats.get("memoryUsageBytes", 0) or 0)
     limit = float(stats.get("memoryLimitBytes", 0) or fallback_limit or 0)
+    if not stats:
+        return f"— / {human_bytes(limit)}" if limit else "unavailable"
+    used = float(stats.get("memoryUsageBytes", 0) or 0)
     if limit:
         return f"{human_bytes(used)} / {human_bytes(limit)}"
     return human_bytes(used)
 
 
-def header(all_containers: List[Dict[str, Any]], running: List[Dict[str, Any]], stats_json: Dict[str, Dict[str, Any]], cpu_percents: Dict[str, float]) -> str:
+def header(
+    all_containers: List[Dict[str, Any]],
+    running: List[Dict[str, Any]],
+    stats_json: Dict[str, Dict[str, Any]],
+    cpu_percents: Dict[str, float],
+    stats_error: Optional[str],
+) -> str:
     count = len(running)
     stopped = len(all_containers) - count
     if count == 0:
         return f"⬢ 0 · {stopped} stopped" if stopped else "⬢ 0"
+    if stats_error:
+        return f"⬢ {count} · stats unavailable · {stopped} stopped" if stopped else f"⬢ {count} · stats unavailable"
     total_mem = sum(float(stats_json.get(item_id(item), {}).get("memoryUsageBytes", 0) or 0) for item in running)
     total_cpu = sum(cpu_percents.get(item_id(item), 0.0) for item in running)
     if stopped:
@@ -262,15 +329,15 @@ def main() -> int:
         print("---")
         print("Apple Container system is stopped.")
         print(f"Start system | {container_action(['system', 'start'])}")
-        print(f"System logs | {open_in_terminal('container system logs -f')}")
+        print(f"System logs | {open_in_terminal(container_shell_command(['system', 'logs', '-f']))}")
         print("Refresh | refresh=true")
         return 0
 
     try:
         all_containers = get_containers(include_all=True)
         running = [item for item in all_containers if container_status(item) == "running"]
-        stats_json = get_stats_json()
-        cpu_percents = cpu_percents_from_stats(stats_json)
+        stats_json, stats_error = get_stats_json()
+        cpu_percents = cpu_percents_from_stats(stats_json) if stats_error is None else {}
         running_ids = [item_id(item) for item in running]
     except FileNotFoundError:
         emit_error("missing", "The `container` CLI was not found in PATH.")
@@ -281,25 +348,34 @@ def main() -> int:
 
     stopped = [item for item in all_containers if container_status(item) != "running"]
 
-    print(header(all_containers, running, stats_json, cpu_percents))
+    print(header(all_containers, running, stats_json, cpu_percents, stats_error))
     print("---")
     print(f"System: {status}")
     print(f"Running: {len(running)}")
     print(f"Stopped: {len(stopped)}")
     print(f"Total: {len(all_containers)}")
-    total_mem = sum(float(stats_json.get(cid, {}).get("memoryUsageBytes", 0) or 0) for cid in running_ids)
-    total_pids = sum(int(stats_json.get(cid, {}).get("numProcesses", 0) or 0) for cid in running_ids)
-    total_rx = sum(float(stats_json.get(cid, {}).get("networkRxBytes", 0) or 0) for cid in running_ids)
-    total_tx = sum(float(stats_json.get(cid, {}).get("networkTxBytes", 0) or 0) for cid in running_ids)
-    total_read = sum(float(stats_json.get(cid, {}).get("blockReadBytes", 0) or 0) for cid in running_ids)
-    total_write = sum(float(stats_json.get(cid, {}).get("blockWriteBytes", 0) or 0) for cid in running_ids)
-    total_cpu = sum(cpu_percents.get(cid, 0.0) for cid in running_ids)
+    if stats_error is None:
+        total_mem = sum(float(stats_json.get(cid, {}).get("memoryUsageBytes", 0) or 0) for cid in running_ids)
+        total_pids = sum(int(stats_json.get(cid, {}).get("numProcesses", 0) or 0) for cid in running_ids)
+        total_rx = sum(float(stats_json.get(cid, {}).get("networkRxBytes", 0) or 0) for cid in running_ids)
+        total_tx = sum(float(stats_json.get(cid, {}).get("networkTxBytes", 0) or 0) for cid in running_ids)
+        total_read = sum(float(stats_json.get(cid, {}).get("blockReadBytes", 0) or 0) for cid in running_ids)
+        total_write = sum(float(stats_json.get(cid, {}).get("blockWriteBytes", 0) or 0) for cid in running_ids)
+        total_cpu = sum(cpu_percents.get(cid, 0.0) for cid in running_ids)
 
-    print(f"Total CPU: {total_cpu:.2f}%")
-    print(f"Total Memory: {human_bytes(total_mem)}")
-    print(f"Total PIDs: {total_pids}")
-    print(f"Total Net Rx/Tx: {human_bytes(total_rx)} / {human_bytes(total_tx)}")
-    print(f"Total Disk R/W: {human_bytes(total_read)} / {human_bytes(total_write)}")
+        print(f"Total CPU: {total_cpu:.2f}%")
+        print(f"Total Memory: {human_bytes(total_mem)}")
+        print(f"Total PIDs: {total_pids}")
+        print(f"Total Net Rx/Tx: {human_bytes(total_rx)} / {human_bytes(total_tx)}")
+        print(f"Total Disk R/W: {human_bytes(total_read)} / {human_bytes(total_write)}")
+    else:
+        print("Stats: unavailable")
+        print(f"-- Reason: {stats_error.replace(chr(10), ' ')}")
+        print("Total CPU: unavailable")
+        print("Total Memory: unavailable")
+        print("Total PIDs: unavailable")
+        print("Total Net Rx/Tx: unavailable")
+        print("Total Disk R/W: unavailable")
     print("Refresh | refresh=true")
 
     print("---")
@@ -310,8 +386,8 @@ def main() -> int:
         print(f"-- Stop all running | {container_action(['stop', '--all'])}")
     if stopped:
         print(f"-- Prune stopped | {container_action(['prune'])}")
-    print(f"-- System logs | {open_in_terminal('container system logs -f')}")
-    print(f"-- System disk usage | {open_in_terminal('container system df')}")
+    print(f"-- System logs | {open_in_terminal(container_shell_command(['system', 'logs', '-f']))}")
+    print(f"-- System disk usage | {open_in_terminal(container_shell_command(['system', 'df']))}")
 
     if not all_containers:
         return 0
@@ -331,21 +407,33 @@ def main() -> int:
         cpus = res.get("cpus", "—")
         ip = item_ip(item)
 
-        title = f"{cid} — {cpu_percents.get(cid, 0.0):.2f}% CPU, {memory_text(sj, mem_limit)}, {sj.get('numProcesses', '—')} pids"
+        if sj:
+            title = f"{cid} — {cpu_percents.get(cid, 0.0):.2f}% CPU, {memory_text(sj, mem_limit)}, {sj.get('numProcesses', '—')} pids"
+        else:
+            title = f"{cid} — stats unavailable"
         print(title)
         print("-- Status: running")
         print(f"-- IP: {ip}")
         print(f"-- Ports: {port_summary(item)}")
+        browser_targets = browser_urls(item)
+        if len(browser_targets) == 1:
+            print(f"-- Open in Browser | {open_in_browser(browser_targets[0])}")
+        else:
+            for target in browser_targets:
+                print(f"-- Open {target} | {open_in_browser(target)}")
+        if not sj:
+            print("-- Runtime stats: unavailable")
         limit_text = human_bytes(float(mem_limit)) if mem_limit else "—"
         print(f"-- Limit: {cpus} CPU / {limit_text}")
         print(f"-- Net: {net_text(sj)}")
         print(f"-- Disk: {block_text(sj)}")
+        inspect_command = f"{container_shell_command(['inspect', cid])} | python3 -m json.tool | less"
         print(f"-- Stop | {container_action(['stop', cid])}")
         print(f"-- Restart | {shell_action(f'{shell_quote(CONTAINER_BIN)} stop {shell_quote(cid)} && {shell_quote(CONTAINER_BIN)} start {shell_quote(cid)}')}")
         print(f"-- Kill | {container_action(['kill', cid])}")
-        print(f"-- Logs | {open_in_terminal(f'container logs -f {shell_quote(cid)}')}")
-        print(f"-- Shell (sh) | {open_in_terminal(f'container exec -it {shell_quote(cid)} sh')}")
-        print(f"-- Inspect | {open_in_terminal(f'container inspect {shell_quote(cid)} | python3 -m json.tool | less')}")
+        print(f"-- Logs | {open_in_terminal(container_shell_command(['logs', '-f', cid]))}")
+        print(f"-- Shell (sh) | {open_in_terminal(container_shell_command(['exec', '-it', cid, 'sh']))}")
+        print(f"-- Inspect | {open_in_terminal(inspect_command)}")
         print("---")
 
     if stopped:
@@ -361,10 +449,11 @@ def main() -> int:
             print("-- Status: stopped")
             print(f"-- Ports: {port_summary(item)}")
             limit_text = human_bytes(float(mem_limit)) if mem_limit else "—"
+            inspect_command = f"{container_shell_command(['inspect', cid])} | python3 -m json.tool | less"
             print(f"-- Limit: {cpus} CPU / {limit_text}")
             print(f"-- Start | {container_action(['start', cid])}")
             print(f"-- Delete | {container_action(['delete', cid])}")
-            print(f"-- Inspect | {open_in_terminal(f'container inspect {shell_quote(cid)} | python3 -m json.tool | less')}")
+            print(f"-- Inspect | {open_in_terminal(inspect_command)}")
             print("---")
 
     return 0

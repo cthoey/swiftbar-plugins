@@ -16,6 +16,7 @@ SwiftBar plugins for machine and workflow status items on macOS.
 - `plugins/apple-container.15s.py`: Apple Container overview with system, start/stop/restart, prune, logs, and per-container lifecycle actions.
 - `plugins/cpu-memory.5s.sh`: live CPU and memory monitor for macOS with top CPU and RAM processes in the dropdown, including friendly labels for Codex autonomous supervisors and workers.
 - `plugins/codex-runner.15s.py`: Continuum monitor for [Continuum for Codex](https://github.com/cthoey/continuum-codex), with top-bar worker counts, per-project status, low-overhead timing signals, recent log context, and quick start/restart/stop/log actions.
+- `plugins/kube-local.15s.py`: local Kubernetes monitor for the Colima + kind workflow, with node and pod health, stale-safe status caching, and quick actions for start/stop, create/delete, logs, events, and cluster info.
 - `plugins/leadops.1m.py`: LeadOps daily brief monitor with packet counts, per-approach run actions, digest actions, quick status changes, and fast access to the workspace, briefs, and logs.
 
 ## Setup
@@ -59,6 +60,7 @@ plugins/
   codex-runner.15s.py
   cpu-memory.5s.sh
   disk-space.1m.sh
+  kube-local.15s.py
   leadops.1m.py
   temperature.15s.py
 scripts/
@@ -95,6 +97,10 @@ vendor/
   automatically because it launches projects through the runner scripts rather than managing power
   state itself.
 - The shell plugins use built-in macOS tools such as `df`, `diskutil`, `plutil`, `top`, `ps`, `sort`, `head`, and `uptime`.
+- `plugins/kube-local.15s.py` is designed around a local `colima` + `kind` setup and monitors the configured context `kind-kind` by default, regardless of your current `kubectl` context. Override that with `KUBE_LOCAL_CONTEXT` if needed.
+- The Kubernetes plugin keeps a small cache in `/tmp` so the menu can still show the last known healthy snapshot when the local API is briefly unreachable, but it does not use cached cluster health when Colima is stopped.
+- The Kubernetes plugin keeps `Stop Colima` as the quick resource-saving action and treats `Delete kind cluster` as an explicit cleanup action that opens in Terminal instead of firing silently.
+- `plugins/kube-local.15s.py` exposes `Open kubeconfig` and `Open local guide`; override the guide path with `KUBE_LOCAL_GUIDE_PATH` if your Kubernetes workspace lives elsewhere.
 - `plugins/leadops.1m.py` expects a LeadOps workspace at `~/Library/Application Support/LeadOps/default` by default. Override it with `LEADOPS_WORKSPACE` if needed.
 - `plugins/leadops.1m.py` looks for `leadops`, `leadops-daily`, and `leadops-swiftbar` on `PATH` first, then falls back to a sibling `leadops/` repo checkout next to this repository.
 - The LeadOps dropdown can kick off the built-in approaches `Founder + Connector Mix` (`early_product`), `Founder Needs Builder` (`builder_need`), and `Public Founder Asks` (`place_watch`) directly through the repo's `leadops-swiftbar` helper.
